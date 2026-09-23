@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Threading;
 
@@ -155,6 +156,71 @@ public abstract class CommandFactory
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Style", "IDE0060:Remove unused parameter", Justification = "Used for type inference")]
     protected static T Cast<T>(object? value, Func<T> shape) => (T)value!;
+
+    /// <summary>
+    /// Renders a value as a SQL literal, for <c>{=name}</c> literal-injection tokens.
+    /// </summary>
+    /// <remarks>
+    /// Matches vanilla Dapper's <c>SqlMapper.Format</c> exactly: <c>bool</c> becomes <c>1</c>/<c>0</c>,
+    /// numerics (and enums, via their underlying type-code) render culture-invariantly, sequences become
+    /// <c>(a,b,c)</c> - with an empty sequence becoming a no-row construct rather than invalid <c>()</c> -
+    /// and null becomes <c>null</c>. Types that could carry injection (notably <see cref="string"/>) are
+    /// refused. Generated code prefers the typed overloads below; this is the general fallback.
+    /// </remarks>
+    protected static string Format(object? value)
+    {
+        if (value is null) return "null";
+        switch (Type.GetTypeCode(value.GetType()))
+        {
+            case TypeCode.DBNull: return "null";
+            case TypeCode.Boolean: return ((bool)value) ? "1" : "0";
+            // enums land here too: GetTypeCode reports the underlying integral type
+            case TypeCode.Byte: return ((byte)value).ToString(CultureInfo.InvariantCulture);
+            case TypeCode.SByte: return ((sbyte)value).ToString(CultureInfo.InvariantCulture);
+            case TypeCode.UInt16: return ((ushort)value).ToString(CultureInfo.InvariantCulture);
+            case TypeCode.Int16: return ((short)value).ToString(CultureInfo.InvariantCulture);
+            case TypeCode.UInt32: return ((uint)value).ToString(CultureInfo.InvariantCulture);
+            case TypeCode.Int32: return ((int)value).ToString(CultureInfo.InvariantCulture);
+            case TypeCode.UInt64: return ((ulong)value).ToString(CultureInfo.InvariantCulture);
+            case TypeCode.Int64: return ((long)value).ToString(CultureInfo.InvariantCulture);
+            case TypeCode.Single: return ((float)value).ToString(CultureInfo.InvariantCulture);
+            case TypeCode.Double: return ((double)value).ToString(CultureInfo.InvariantCulture);
+            case TypeCode.Decimal: return ((decimal)value).ToString(CultureInfo.InvariantCulture);
+            default:
+                if (value is System.Collections.IEnumerable sequence && value is not string)
+                {
+                    return FormatSequence(sequence);
+                }
+                return ThrowNotSupported(value);
+        }
+    }
+
+    private static string FormatSequence(System.Collections.IEnumerable sequence)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var item in sequence)
+        {
+            sb.Append(sb.Length == 0 ? '(' : ',').Append(Format(item));
+        }
+        // an empty sequence cannot render as "()", which is not valid SQL
+        return sb.Length == 0 ? "(select null where 1=0)" : sb.Append(')').ToString();
+    }
+
+    private static string ThrowNotSupported(object value)
+        => throw new NotSupportedException($"The type '{value.GetType().Name}' is not supported for SQL literals.");
+
+    /// <inheritdoc cref="Format(object?)"/>
+    protected static string Format(bool value) => value ? "1" : "0";
+    /// <inheritdoc cref="Format(object?)"/>
+    protected static string Format(bool? value) => value.HasValue ? (value.GetValueOrDefault() ? "1" : "0") : "null";
+    /// <inheritdoc cref="Format(object?)"/>
+    protected static string Format(int value) => value.ToString(CultureInfo.InvariantCulture);
+    /// <inheritdoc cref="Format(object?)"/>
+    protected static string Format(long value) => value.ToString(CultureInfo.InvariantCulture);
+    /// <inheritdoc cref="Format(object?)"/>
+    protected static string Format(decimal value) => value.ToString(CultureInfo.InvariantCulture);
+    /// <inheritdoc cref="Format(object?)"/>
+    protected static string Format(double value) => value.ToString(CultureInfo.InvariantCulture);
 
     internal abstract void PostProcessObject(in UnifiedCommand command, object? args, int rowCount);
 
